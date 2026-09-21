@@ -1,0 +1,30 @@
+# Private project data: never commit to the public repository
+project_1_ANSC_4040_dataset.csv
+data/raw/*
+data/processed/*
+
+# Retain empty data-directory structure
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model artifacts and generated outputs
+*.joblib
+*.pkl
+outputs/figures/*
+!outputs/figures/.gitkeep
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
