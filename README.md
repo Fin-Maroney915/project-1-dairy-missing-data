@@ -65,7 +65,7 @@ The project will be completed **locally** in **Visual Studio Code** using its Ju
 
 ### Data lineage and reproducibility
 
-The original dataset should be saved locally as `data/raw/project_1_ANSC_4040_dataset.csv`. This path is ignored by Git. Derived datasets belong in `data/processed/`, while charts and model results belong in `outputs/`. Every transformation should be performed in code and explained in Markdown cells. Important decisions, including removed records, unit conversions, outlier rules, and imputation methods, will be documented. No predicted value will silently replace an observed value.
+The original dataset should be saved locally as `data/raw/Data_set_prep_assignment_1.csv`. This path is ignored by Git. Derived datasets belong in `data/processed/`, while charts and model results belong in `outputs/`. Every transformation should be performed in code and explained in Markdown cells. Important decisions, including removed records, unit conversions, outlier rules, and imputation methods, will be documented. No predicted value will silently replace an observed value.
 
 ### Anticipated risks
 
@@ -97,7 +97,7 @@ project-1-dairy-missing-data/
 - Use lowercase `snake_case` for Python variables, functions, and data columns: `milk_yield`, `cow_id`.
 - Number notebooks in execution order: `01_data_inspection.ipynb`, `02_cleaning.ipynb`, `03_modeling.ipynb`.
 - Use lowercase descriptive filenames with underscores and no spaces.
-- Keep the raw dataset named `project_1_ANSC_4040_dataset.csv`.
+- Keep the raw dataset named `Data_set_prep_assignment_1.csv`.
 - Name derived datasets by stage and version, such as `milk_yield_cleaned_v1.csv`.
 - Name figures by content, such as `missing_values_by_column.png`.
 
@@ -109,8 +109,130 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Place the private CSV at `data/raw/project_1_ANSC_4040_dataset.csv`, open the repository in VS Code, select the `.venv` Python kernel, and run the inspection notebook from top to bottom.
+Place the private CSV at `data/raw/Data_set_prep_assignment_1.csv`, open the repository in VS Code, select the `.venv` Python kernel, and run the inspection notebook from top to bottom.
+
+## Clean the raw data
+
+The supplied file is `data/raw/Data_set_prep_assignment_1.csv`. After installing
+requirements, run from the project root:
+
+```bash
+python3 scripts/clean_data.py
+```
+
+The script processes 100,000 records at a time so the approximately 903 MB raw
+file does not need to fit in memory. It writes:
+
+- `data/processed/milk_yield_cleaned_v1.csv`: cleaned records, original fields in
+  `*_raw` columns, invalid-value flags, and a `source_row` record number.
+- `data/processed/milk_yield_cleaned_v1.report.json`: row counts, missingness,
+  invalid-value counts, date range, and cleaning decisions.
+
+Both outputs remain private under the existing Git ignore rules. Original fields
+make the output larger than the input. Existing outputs are never overwritten;
+choose a new output name for another run:
+
+```bash
+python3 scripts/clean_data.py --input data/raw/Data_set_prep_assignment_1.csv --output data/processed/milk_yield_cleaned_v2.csv --chunksize 50000
+```
+
+`AnimalId` becomes `cow_id`, `YieldSession` becomes `milk_yield`, and other
+columns use snake_case (see the report for the complete mapping). Cow IDs remain
+text to preserve large signed identifiers exactly. The cleaner trims whitespace,
+normalizes missing tokens, parses numeric values and dates, and flags invalid
+values while retaining their original text. It retains zeros, high measurements,
+unknown reproduction statuses, all incomplete records, and possible duplicates.
+It does not infer IDs, impute yields, convert units, sort observations, or remove
+outliers. Confirm yield units and valid ranges with the data owner before modeling.
+A failed run can leave a partial CSV; a successful run also creates its report.
+
+When loading the cleaned CSV, explicitly preserve IDs as text:
+
+```python
+import pandas as pd
+
+# Use chunksize=100_000 instead of nrows to iterate over the entire dataset.
+df = pd.read_csv(
+    "data/processed/milk_yield_cleaned_v1.csv",
+    dtype={"cow_id": "string", "cow_id_raw": "string"},
+    parse_dates=["event_date"],
+    nrows=100_000,
+)
+```
+
+The inspection notebook is configured for the supplied raw filename and columns.
+It reads the first 100,000 records and preserves IDs as text; its summaries describe
+that preview. Use the cleaning report for full-dataset missingness counts.
 
 ## License
 
 The code and documentation are released under the MIT License. The dairy dataset is not included and remains subject to the terms provided by its owner.
+
+## Deduplicate and split for modeling
+
+Run the preparation script directly on the raw CSV (the earlier cleaned CSV is
+not required):
+
+```bash
+python3 scripts/prepare_training_data.py
+```
+
+This creates a new private directory, `data/processed/milk_yield_splits_v1/`:
+
+- `deduplicated.csv`: cleaned data with exact duplicate source records removed.
+- `train.csv`, `validation.csv`, `test.csv`: approximately 70%, 15%, and 15% of
+  records with observed, valid milk yields and valid dates, ordered by date range.
+- `missing_yield.csv`: records reserved for later yield prediction.
+- `undated_labeled.csv`: observed yields without valid dates, excluded from the
+  chronological splits.
+- `report.json`: counts, actual split fractions, date ranges, and decisions.
+
+Duplicates must match all 11 original field values exactly. The first occurrence
+is retained, including its `source_row`. Distinct sessions for the same cow and
+date remain. Deduplication checks the entire dataset across chunk boundaries
+using a temporary disk-backed index. The raw file and earlier cleaned files are
+preserved. Whitespace or numeric-format differences are not exact duplicates.
+
+The split keeps entire dates together and places earlier dates in training and
+later dates in validation and testing. Fractions can differ from 70/15/15 to avoid
+sharing a date across partitions. Rows retain their original order inside each
+file; sort by date before constructing temporal features. Cows may occur in
+multiple splits, consistent with predicting later measurements for this herd.
+
+Use `milk_yield` as the target. Select predictor columns explicitly: do not feed
+`source_row`, any `*_raw` columns, or `milk_yield_missing` into the model. Review
+whether same-session flow, duration, and first-two-minute yield are available
+when a yield needs predicting. Fit preprocessing and imputers on training data
+only, tune on validation, and reserve test data for final evaluation. Preserve
+cow IDs with `dtype={"cow_id": "string", "cow_id_raw": "string"}` when loading.
+
+Choose a fresh `--output-dir` to rerun. Existing directories are never overwritten;
+a run is complete only when `report.json` exists. Use `--chunksize 50000` to reduce
+memory use. Verify the partitioning logic with:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+
+## Context imputation results
+
+The final dataset contains 4,688,514 rows and 23 columns.
+
+High-confidence imputation results:
+
+- Reproduction status: 939,749 missing values imputed
+- Days in milk: 22,417 high-confidence predictions retained
+- Lactation number: 149,541 high-confidence predictions retained
+- Cow ID was not imputed because validation accuracy was insufficient
+- Predictions that did not satisfy the selected confidence thresholds were left missing
+
+Missing values remaining:
+
+- Cow ID: 939,749
+- Average milk flow: 100
+- Lactation number: 790,208
+- Days in milk: 917,334
+- Reproduction status: 0
+
+The final dataset was excluded from Git because of its size and must be generated locally by running the notebooks.
